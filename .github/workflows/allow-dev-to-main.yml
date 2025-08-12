@@ -1,17 +1,28 @@
-name: Allow only dev to main PRs
+name: Restrict PR Sources
 
 on:
   pull_request:
     branches:
       - main
+      - dev
 
 jobs:
-  check-source-branch:
+  enforce-pr-source:
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if source branch is not dev
+      - name: Check PR source branch
         run: |
-          if [ "${{ github.head_ref }}" != "dev" ]; then
-            echo "Pull requests to main must come from dev branch."
-            exit 1
+          TARGET="${{ github.base_ref }}"
+          SOURCE="${{ github.head_ref }}"
+
+          if [ "$TARGET" = "main" ]; then
+            if [ "$SOURCE" != "dev" ]; then
+              echo "Pull requests to main are only allowed from 'dev'."
+              exit 1
+            fi
+          elif [ "$TARGET" = "dev" ]; then
+            if [[ ! "$SOURCE" =~ ^(bug/|feature/|hotfix/) ]]; then
+              echo "Pull requests to dev are only allowed from branches starting with 'bug/', 'feature/', or 'hotfix/'."
+              exit 1
+            fi
           fi
