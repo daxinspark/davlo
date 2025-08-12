@@ -1,0 +1,17 @@
+name: Allow only dev to main PRs
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check-source-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if source branch is not dev
+        run: |
+          if [ "${{ github.head_ref }}" != "dev" ]; then
+            echo "Pull requests to main must come from dev branch."
+            exit 1
+          fi
