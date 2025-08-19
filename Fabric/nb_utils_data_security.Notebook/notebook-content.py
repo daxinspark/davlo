@@ -64,6 +64,22 @@
 
 # CELL ********************
 
+module = "column_level_data_security"
+
+if not davlo_eligible(module):
+    mssparkutils.notebook.exit(str(f"Not eligible for {module}"))
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python",
+# META   "frozen": false,
+# META   "editable": false
+# META }
+
+# CELL ********************
+
 !pip install cryptography --quiet
 
 # METADATA ********************
@@ -349,72 +365,35 @@ def column_level_decryption(
 
 # CELL ********************
 
-df = pd.DataFrame({
-    "id": [1, 2, 3],
-    "email": ["alice@example.com", "bob@example.com", "carol@example.com"],
-    "salary": [85000, 92000, 101000],
-})
-df
+# df = pd.DataFrame({
+#     "id": [1, 2, 3],
+#     "email": ["alice@example.com", "bob@example.com", "carol@example.com"],
+#     "salary": [85000, 92000, 101000],
+# })
+# print(df)
 
-# METADATA ********************
+# # Generate a high-entropy root key (store/manage securely in practice)
+# root_key = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
+# print(root_key)
 
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
+# # Encrypt selected columns
+# encrypted_df = column_level_encryption(
+#     df=df,
+#     encryption_key=root_key,
+#     encryption_columns=["email", "salary"],
+#     hashing_option=False,
+#     encryption_randomize=True
+# )
 
-# CELL ********************
+# print(encrypted_df.head())
 
-# Generate a high-entropy root key (store/manage securely in practice)
-root_key = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
-root_key
+# decrypt_df = column_level_decryption(
+#     df=encrypted_df,
+#     encryption_key=root_key,
+#     encryption_columns=["email", "salary"]
+# )
 
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
-
-# CELL ********************
-
-# Encrypt selected columns
-encrypted_df = column_level_encryption(
-    df=df,
-    encryption_key=root_key,
-    encryption_columns=["email", "salary"],
-    hashing_option=False,
-    encryption_randomize=True
-)
-
-encrypted_df.head()
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
-
-# CELL ********************
-
-decrypt_df = column_level_decryption(
-    df=encrypted_df,
-    encryption_key=root_key,
-    encryption_columns=["email", "salary"]
-)
-
-decrypt_df.head()
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
-
-# CELL ********************
-
+# print(decrypt_df.head())
 
 # METADATA ********************
 
