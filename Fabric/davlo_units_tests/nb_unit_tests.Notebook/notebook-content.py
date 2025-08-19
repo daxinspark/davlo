@@ -35,7 +35,7 @@
 
 # CELL ********************
 
-def encrypt_decrypt():
+def data_security():
     try:
         df = pd.DataFrame({
             "id": [1, 2, 3],
@@ -72,7 +72,7 @@ def encrypt_decrypt():
         print(str(e))
         return False
 
-encrypt_decrypt()
+data_security()
 
 # METADATA ********************
 
