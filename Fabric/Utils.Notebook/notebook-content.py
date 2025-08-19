@@ -6,7 +6,28 @@
 # META   "kernel_info": {
 # META     "name": "synapse_pyspark"
 # META   },
-# META   "dependencies": {}
+# META   "dependencies": {
+# META     "lakehouse": {
+# META       "default_lakehouse_name": "",
+# META       "default_lakehouse_workspace_id": ""
+# META     }
+# META   }
+# META }
+
+# MARKDOWN ********************
+
+# # Utils
+# xxx
+
+# CELL ********************
+
+%pip install pandas --quiet
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
 # META }
 
 # CELL ********************
@@ -22,10 +43,30 @@ from datetime import datetime, timedelta
 # META   "language_group": "synapse_pyspark"
 # META }
 
+# MARKDOWN ********************
+
+# ## Davlo configuration
+# xxx
+
 # CELL ********************
 
-def show_df(df):
-    display(df.head())
+%run nb_utils_davlo_config
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
+
+# MARKDOWN ********************
+
+# ## Data security
+# xxx
+
+# CELL ********************
+
+%run nb_utils_data_security
 
 # METADATA ********************
 
