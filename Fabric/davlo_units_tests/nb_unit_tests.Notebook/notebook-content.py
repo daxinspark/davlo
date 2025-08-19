@@ -80,3 +80,64 @@ data_security()
 # META   "language": "python",
 # META   "language_group": "synapse_pyspark"
 # META }
+
+# MARKDOWN ********************
+
+# ### Data Quality (Basic)
+
+# CELL ********************
+
+def dq_basic():
+    try:
+        # Sample DataFrame
+        now = datetime.now(timezone.utc)
+        df = pd.DataFrame({
+            "id": [1, 2, 3, 4, 5],
+            "age": [25, 42, 130, np.nan, 31],
+            "email": ["a@example.com", "bademail", "c@example.com", None, "d@sample.org"],
+            "status": ["active", "inactive", "unknown", "ACTIVE", "inactive"],
+            "updated_at": [
+                now - timedelta(minutes=5),
+                now - timedelta(days=2),
+                now - timedelta(hours=1),
+                pd.NaT,
+                now - timedelta(minutes=30),
+            ],
+        })
+
+        # Rules
+        config = {
+            "row_validations": [
+                {"id": "not_null_id", "type": "not_null", "column": "id", "severity": "error"},
+                {"id": "range_age", "type": "range", "column": "age", "min": 0, "max": 120, "severity": "warn"},
+                {"id": "regex_email", "type": "regex", "column": "email",
+                    "pattern": r"^[^\s@]+@[^\s@]+\.[^\s@]+$", "case_insensitive": True, "severity": "warn"},
+                {"id": "allowed_status", "type": "allowed_values", "column": "status",
+                    "allowed": ["active", "inactive"], "case_sensitive": False, "severity": "error"},
+            ],
+            "dataset_checks": [
+                {"id": "min_rows", "type": "row_count_min", "min": 3, "severity": "error"},
+                {"id": "freshness_updated_at", "type": "freshness", "column": "updated_at",
+                    "max_lag_minutes": 60 * 24, "severity": "warn"},
+            ],
+        }
+
+
+        results = run_basic_dq(df, config=config, dataset_name="demo.customers").reset_index(drop=True)
+        
+        return results
+    
+    
+    except Exception as e:
+        print(str(e))
+        return False
+    
+
+dq_basic()
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }

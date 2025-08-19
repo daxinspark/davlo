@@ -74,3 +74,19 @@ from datetime import datetime, timedelta
 # META   "language": "python",
 # META   "language_group": "synapse_pyspark"
 # META }
+
+# MARKDOWN ********************
+
+# ## Data quality
+# xxx
+
+# CELL ********************
+
+%run nb_utils_dataquality_basic
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "synapse_pyspark"
+# META }
