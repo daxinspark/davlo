@@ -1,0 +1,144 @@
+name: Enrich PR Title and Description
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enrich PR title and description
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed('No pull_request in payload');
+              return;
+            }
+
+            const action = context.payload.action;
+            const { owner, repo } = context.repo;
+            const prNumber = pr.number;
+
+            // Fetch fresh PR details to get stats
+            const { data: fullPR } = await github.rest.pulls.get({
+              owner, repo, pull_number: prNumber
+            });
+
+            // Collect commits and files (paginate for big PRs)
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              { owner, repo, pull_number: prNumber, per_page: 100 }
+            );
+            const files = await github.paginate(
+              github.rest.pulls.listFiles,
+              { owner, repo, pull_number: prNumber, per_page: 100 }
+            );
+
+            const branch = pr.head.ref;
+            const base = pr.base.ref;
+
+            // Infer type from branch prefix
+            const type =
+              branch.startsWith('feature/') ? 'feat' :
+              branch.startsWith('bug/') ? 'fix' :
+              branch.startsWith('hotfix/') ? 'hotfix' :
+              'chore';
+
+            // Extract ticket key like ABC-123 if present in branch
+            const ticketMatch = branch.match(/[A-Z]{2,10}-\d+/);
+            const ticket = ticketMatch ? ticketMatch[0] : null;
+
+            // Build a descriptive title
+            const commitCount = commits.length;
+            const fileCount = fullPR.changed_files ?? files.length;
+            const additions = fullPR.additions ?? 0;
+            const deletions = fullPR.deletions ?? 0;
+
+            const newTitle =
+              `[${type}${ticket ? ` ${ticket}` : ''}] ${branch} → ${base} ` +
+              `(${commitCount} commits, ${fileCount} files, +${additions}/-${deletions})`;
+
+            // Only set title on opened/reopened to avoid fighting manual edits
+            if (action === 'opened' || action === 'reopened') {
+              if (pr.title !== newTitle) {
+                await github.rest.pulls.update({
+                  owner, repo, pull_number: prNumber, title: newTitle
+                });
+                core.notice(`Updated PR title to: ${newTitle}`);
+              }
+            }
+
+            // Maintain an auto-generated summary section in the PR body
+            const startMarker = '<!-- auto-summary:start -->';
+            const endMarker = '<!-- auto-summary:end -->';
+
+            const stripAutoSection = (body) => {
+              if (!body) return '';
+              const start = body.indexOf(startMarker);
+              if (start === -1) return body;
+              const end = body.indexOf(endMarker, start);
+              if (end === -1) return body.slice(0, start).trimEnd();
+              return (body.slice(0, start).trimEnd() + '\n\n' + body.slice(end + endMarker.length).trimStart()).trim();
+            };
+
+            const bodyPrefix = stripAutoSection(pr.body || '');
+
+            // Prepare commits list (limit to 50)
+            const maxItems = 50;
+            const commitLines = commits.slice(0, maxItems).map(c => {
+              const sha = c.sha.substring(0, 7);
+              const msg = (c.commit && c.commit.message) ? c.commit.message.split('\n')[0] : '(no message)';
+              const author = c.author?.login || c.commit?.author?.name || 'unknown';
+              return `- ${sha} ${msg} (${author})`;
+            });
+            if (commits.length > maxItems) {
+              commitLines.push(`- …and ${commits.length - maxItems} more`);
+            }
+
+            // Prepare files list (limit to 100)
+            const fileLines = files.slice(0, 100).map(f => {
+              const add = typeof f.additions === 'number' ? f.additions : '?';
+              const del = typeof f.deletions === 'number' ? f.deletions : '?';
+              const status = f.status || 'modified';
+              return `- ${f.filename} (${status}, +${add}/-${del})`;
+            });
+            if (files.length > 100) {
+              fileLines.push(`- …and ${files.length - 100} more`);
+            }
+
+            const autoSection = [
+              startMarker,
+              'Auto-generated summary. This section is maintained by a workflow.',
+              '',
+              `Source: ${branch}`,
+              `Target: ${base}`,
+              `Type: ${type}${ticket ? ` (${ticket})` : ''}`,
+              `Commits: ${commitCount}`,
+              `Files changed: ${fileCount}`,
+              `Additions/Deletions: +${additions}/-${deletions}`,
+              '',
+              'Commits:',
+              ...commitLines,
+              '',
+              'Files changed:',
+              ...fileLines,
+              endMarker
+            ].join('\n');
+
+            const newBody = [bodyPrefix.trim(), autoSection].filter(Boolean).join('\n\n');
+
+            if (newBody !== (pr.body || '')) {
+              await github.rest.pulls.update({
+                owner, repo, pull_number: prNumber, body: newBody
+              });
+              core.notice('Updated PR description with auto-generated summary.');
+            } else {
+              core.notice('PR description already up to date.');
+            }
