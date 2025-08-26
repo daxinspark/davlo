@@ -148,6 +148,17 @@ def check_workspace_module(module_name:str, workspace_uri:str, config_file:dict,
 
 # CELL ********************
 
+print('yes')
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
 def davlo_eligible(module_name: str, log:bool = False):
     # Get DavLo config file 
     config_file = get_config_file(log=log)
