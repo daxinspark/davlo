@@ -148,7 +148,71 @@ def check_workspace_module(module_name:str, workspace_uri:str, config_file:dict,
 
 # CELL ********************
 
-print('yes')
+def get_sql_secret(config_file: dict):
+    from azure.identity import ClientSecretCredential
+    from azure.keyvault.secrets import SecretClient
+
+    tenant_id = config_file.get('sp').get('tenant_id')
+    client_id = config_file.get('sp').get('client_id')        
+    client_secret = config_file.get('sp').get('client_secret')
+
+    credential = ClientSecretCredential(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret
+    )
+
+    kv_uri = config_file.get('keyvault').get('url')
+
+    # Create client
+    secret_client = SecretClient(vault_url=kv_uri, credential=credential)
+    
+    server = secret_client.get_secret(config_file.get('sql').get('server_url')).value
+    user = secret_client.get_secret(config_file.get('sql').get('user')).value
+    password = secret_client.get_secret(config_file.get('sql').get('password')).value
+    database = config_file.get('sql').get('database')
+
+    return server, user, password, database
+
+
+def connect_to_db(config_file):
+    import pyodbc
+
+    server, username, password, database = get_sql_secret(config_file=config_file)
+
+    # ODBC Driver (must be installed on machine, usually "ODBC Driver 18 for SQL Server")
+    driver = '{ODBC Driver 18 for SQL Server}'
+
+    connection_string = f'''
+        DRIVER={driver};
+        SERVER={server};
+        DATABASE={database};
+        UID={username};
+        PWD={password};
+        Encrypt=yes;
+        TrustServerCertificate=no;
+        Connection Timeout=30;
+    '''
+
+    conn = pyodbc.connect(connection_string)
+    return conn
+
+
+def query_config_db(query:str, conn= None) -> pd.DataFrame:
+
+    if not conn:
+        config_file = get_config_file(log=False)
+        conn = connect_to_db(config_file=config_file)
+
+    # Test query
+    df = pd.read_sql(query, conn)   # here conn is your pyodbc connection object
+
+    return df
+
+
+# config_file = get_config_file(log=False)
+
+# query_config_db(query = "SELECT TOP 5 name FROM sys.databases")
 
 # METADATA ********************
 
