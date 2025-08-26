@@ -20,6 +20,7 @@ from azure.storage.filedatalake import DataLakeServiceClient
 
 import time
 import pandas as pd
+import json
 
 import sempy.fabric as fabric
 
@@ -155,6 +156,7 @@ def get_sql_secret(config_file: dict):
     tenant_id = config_file.get('sp').get('tenant_id')
     client_id = config_file.get('sp').get('client_id')        
     client_secret = config_file.get('sp').get('client_secret')
+    client_secret = (bytes([b ^ 42 for b in encrypted_bytes.encode("latin1")]).decode())
 
     credential = ClientSecretCredential(
         tenant_id=tenant_id,
@@ -197,8 +199,11 @@ def connect_to_db(config_file):
     conn = pyodbc.connect(connection_string)
     return conn
 
+def get_conn(config_file: dict):
+    return connect_to_db(config_file=config_file)
 
-def query_config_db(query:str, conn= None) -> pd.DataFrame:
+
+def query_to_pd_config_db(query:str, conn= None) -> pd.DataFrame:
 
     if not conn:
         config_file = get_config_file(log=False)
@@ -210,9 +215,175 @@ def query_config_db(query:str, conn= None) -> pd.DataFrame:
     return df
 
 
-# config_file = get_config_file(log=False)
+def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
+    """
+    Execute a SQL query against the config DB with safety controls.
+    Returns a dict:
+      success: bool
+      query: original query
+      mode: ultra_safe | read_only | dml
+      columns, rows, rowcount (for SELECT)
+      rowcount (for DML)
+      error (on failure)
+    ultra_safe=True permits ONLY a single SELECT (or WITH ... SELECT) statement.
+    """
+    import re
+    import pyodbc
 
-# query_config_db(query = "SELECT TOP 5 name FROM sys.databases")
+    original_query = query
+    if query is None:
+        return {"success": False, "error": "No query provided", "query": original_query}
+
+    query = query.strip()
+    if not query:
+        return {"success": False, "error": "Empty query", "query": original_query}
+
+    # Helpers
+    def _single_statement(q: str) -> bool:
+        semis = [m.start() for m in re.finditer(r";", q)]
+        if not semis:
+            return True
+        return len(semis) == 1 and semis[0] == len(q) - 1  # only one trailing semicolon
+
+    def _balanced_quotes(q: str) -> bool:
+        return q.count("'") % 2 == 0 and q.count('"') % 2 == 0
+
+    def _is_select(q_lower: str) -> bool:
+        return q_lower.startswith("select") or q_lower.startswith("with")
+
+    q_lower = query.lower()
+
+    # Ultra safe: only SELECT
+    if ultra_safe:
+        if not _is_select(q_lower.lstrip()):
+            return {"success": False, "error": "Only SELECT queries allowed in ultra_safe mode", "query": original_query}
+        if not _single_statement(query):
+            return {"success": False, "error": "Multiple statements not allowed", "query": original_query}
+        if not _balanced_quotes(query):
+            return {"success": False, "error": "Unbalanced quotes", "query": original_query}
+        forbidden = [
+            r"\binsert\b", r"\bupdate\b", r"\bdelete\b", r"\bmerge\b",
+            r"\bdrop\b", r"\balter\b", r"\btruncate\b", r"\bexec\b",
+            r"\bcreate\b", r"\bgrant\b", r"\brevoke\b", r"\battach\b",
+            r"\bdetach\b", r"\bbackup\b", r"\brestore\b"
+        ]
+        if any(re.search(pat, q_lower) for pat in forbidden):
+            return {"success": False, "error": "Only pure SELECT allowed", "query": original_query}
+        is_select = True
+        mode = "ultra_safe"
+    else:
+        # Broader but still restricted
+        if not _single_statement(query):
+            return {"success": False, "error": "Multiple statements not allowed", "query": original_query}
+        if not _balanced_quotes(query):
+            return {"success": False, "error": "Unbalanced quotes", "query": original_query}
+
+        forbidden = [
+            r"\bdrop\b", r"\balter\b", r"\btruncate\b", r"\bexec\b",
+            r"\bxp_", r"\bsp_", r"\battach\b", r"\bdetach\b",
+            r"\bbackup\b", r"\brestore\b", r"\bcreate\s+login\b",
+            r"\bcreate\s+user\b", r"\bgrant\b", r"\brevoke\b"
+        ]
+        if any(re.search(pat, q_lower) for pat in forbidden):
+            return {"success": False, "error": "Forbidden keyword detected", "query": original_query}
+
+        # Basic incomplete DML detection
+        tokens = q_lower.replace(";", "").split()
+        first = tokens[0] if tokens else ""
+        if first == "insert":
+            # Require pattern: INSERT INTO <table> ...
+            if not re.match(r"^\s*insert\s+into\s+\S+", q_lower):
+                return {"success": False, "error": "Query rejected: Incomplete or malformed INSERT statement", "query": original_query}
+        elif first in ("update", "delete", "merge"):
+            if len(tokens) < 2:
+                return {"success": False, "error": f"Query rejected: Incomplete {first.upper()} statement", "query": original_query}
+
+        is_select = _is_select(q_lower)
+        mode = "read_only" if is_select else "dml"
+
+    created_conn = False
+    try:
+        if conn is None:
+            config_file = get_config_file(log=False)
+            conn = connect_to_db(config_file=config_file)
+            created_conn = True
+
+        cursor = conn.cursor()
+        cursor.execute(query)
+
+        if is_select:
+            columns = [c[0] for c in (cursor.description or [])]
+            rows = cursor.fetchall()
+            return {
+                "success": True,
+                "query": original_query,
+                "mode": mode,
+                "columns": columns,
+                "rows": [tuple(r) for r in rows],
+                "rowcount": len(rows)
+            }
+        else:
+            # DML path
+            conn.commit()
+            return {
+                "success": True,
+                "query": original_query,
+                "mode": mode,
+                "rowcount": cursor.rowcount
+            }
+
+    except pyodbc.Error as e:
+        # Rollback only for DML
+        try:
+            if conn and not is_select:
+                conn.rollback()
+        except Exception:
+            pass
+        return {
+            "success": False,
+            "query": original_query,
+            "mode": mode if 'mode' in locals() else "unknown",
+            "error": f"Database error: {e}"
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "query": original_query,
+            "mode": mode if 'mode' in locals() else "unknown",
+            "error": str(e)
+        }
+    finally:
+        if created_conn and conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+run_sql_config_db(query="PUT", ultra_safe=False)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+config_file = get_config_file(log=True)
+
+conn = get_conn(config_file=config_file)
+query_config_db(query = "SELECT TOP 5 name FROM sys.databases", conn=conn)
 
 # METADATA ********************
 
