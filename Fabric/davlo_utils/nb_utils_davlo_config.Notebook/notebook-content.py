@@ -155,7 +155,7 @@ def get_sql_secret(config_file: dict):
 
     tenant_id = config_file.get('sp').get('tenant_id')
     client_id = config_file.get('sp').get('client_id')        
-    client_secret = config_file.get('sp').get('client_secret')
+    encrypted_bytes = config_file.get('sp').get('client_secret')
     client_secret = (bytes([b ^ 42 for b in encrypted_bytes.encode("latin1")]).decode())
 
     credential = ClientSecretCredential(
@@ -359,6 +359,86 @@ def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
             except Exception:
                 pass
 
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+class DavloConfig:
+    """
+    Convenience wrapper for config DB operations.
+    Holds:
+      config_file: dict with Azure + SQL settings
+      conn: live pyodbc connection (lazy)
+      workspace_id: optional workspace / tenant scope
+    """
+    def __init__(self):
+        self.config_file = get_config_file(log=False)
+        self.workspace_id = fabric.get_notebook_workspace_id()
+        self.conn = connect_to_db(self.config_file)
+
+    def ensure_connection(self):
+        if self.conn is None:
+            self.conn = connect_to_db(self.config_file)
+        return self.conn
+
+    def close(self):
+        if self.conn:
+            try:
+                self.conn.close()
+            finally:
+                self.conn = None
+
+    def run_query(self, query: str, ultra_safe: bool = True):
+        self.ensure_connection()
+        return run_sql_config_db(query=query, conn=self.conn, ultra_safe=ultra_safe)
+
+    def insert_logging_row(self):
+
+        sql = f"""
+        INSERT INTO
+        VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME())
+        """
+
+        response = run_sql_config_db(query=sql, conn=self.conn,ultra_safe=False)
+        print(response)
+    
+    def get_logging_row(self):
+
+        sql = f"""
+        SELECT TOP(10) * FROM LOGGING.ActivityLog
+        """
+
+        response = run_sql_config_db(query=sql, conn=self.conn,ultra_safe=False)
+        return response
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+dav = DavloConfig()
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+dav.get_logging_row().get('rows')
 
 # METADATA ********************
 
