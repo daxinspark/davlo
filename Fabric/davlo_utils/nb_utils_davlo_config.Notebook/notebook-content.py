@@ -210,6 +210,85 @@ def connect_to_db(config_file):
 # META   "language_group": "jupyter_python"
 # META }
 
+# MARKDOWN ********************
+
+# ## dav_client
+# 
+# Lightweight helper for safe SELECT (limited) and INSERT operations.
+# 
+# ### Get (read)
+# 
+# ```python
+# # First 100 rows (default)
+# df = dav_client.get('logging.ActivityLogEncryption')
+# 
+# # All rows
+# df_all = dav_client.get('logging.ActivityLogEncryption', full_load=True)
+# 
+# # Filter + order (ONLY starts with WHERE / ORDER BY / GROUP BY)
+# df_ok = dav_client.get(
+#     'logging.ActivityLogEncryption',
+#     params="WHERE Success = 1 ORDER BY DateCreated DESC"
+# )
+# ```
+# 
+# ### Post (insert)
+# 
+# ```python
+# res_df = dav_client.post(
+#     table='logging.ActivityLogEncryption',
+#     data={
+#         "Process": "Encryption",
+#         "DurationMs": 392850,
+#         "RowsAffected": 231,
+#         "EncryptedColumns": "internalId;BSN",
+#         "Success": True,
+#         "WorkspaceID": fabric.get_workspace_id()  # if available
+#     }
+# )
+# print(res_df)
+# ```
+# 
+# Returned DataFrame columns:
+# - success (bool)
+# - error (str | None)
+# - rowcount (int | None)
+# - used_columns (list | None)
+# - ignored_columns (list | None)
+# - table (str)
+# 
+# ## Method Summary
+# 
+# ```text
+# dav_client.get(table, full_load=False, params=None)
+#     -> pandas DataFrame of rows (TOP 100 unless full_load=True)
+# 
+# dav_client.post(table, data: dict)
+#     -> single-row pandas DataFrame with success/error metadata
+# ```
+# 
+# ## Safety Notes
+# 
+# - Table name validated: only alphanumeric + underscore, optional schema.
+# - get params fragment must start with WHERE / ORDER BY / GROUP BY and forbids DDL/DML tokens.
+# - post uses parameterized INSERT (? placeholders).
+# - Unknown keys in data are ignored; if none match, success=False with descriptive error.
+# 
+# ## Internal Helpers (not typically called directly)
+# 
+# ```text
+# _sanitize_table_name, _split_schema_table, _validate_optional_clause
+# DavloError, DavloInsertError
+# ```
+# 
+# ## Troubleshooting
+# 
+# | Issue | Cause | Fix |
+# |-------|-------|-----|
+# | success=False, "No valid columns..." | Key names mismatch DB columns | Adjust key names to exact column names |
+# | Warning about SQLAlchemy (suppressed) | pandas notice on pyodbc | Already suppressed via warnings.filterwarnings |
+
+
 # CELL ********************
 
 import warnings
@@ -446,38 +525,6 @@ class DavloInsertError(DavloError):
     """Raised for insert-related issues with helpful context."""
 
 dav_client = DavloConfig()
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
-
-# CELL ********************
-
-# dav_client.get(table='logging.ActivityLogEncryption')
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
-
-# CELL ********************
-
-# dav_client.post(
-#     table = 'logging.ActivityLogEncryption',
-#     data = {
-#         "Process":"Encryption",
-#         "DurationMs":392850,
-#         "RowsAffected":231,
-#         "EncryptedColumns":"internalId;BSN",
-#         "Success":True,
-#         "WorkspaceID": fabric.get_workspace_id()
-#     }
-# )
 
 # METADATA ********************
 
