@@ -1,0 +1,186 @@
+name: Pre-Release on Main Merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches:
+      - main
+
+# Ensure only one runs at a time to prevent duplicate tags if many PRs merge quickly
+concurrency:
+  group: prerelease-main
+  cancel-in-progress: false
+
+jobs:
+  create_pre_release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # needed to create release
+      pull-requests: read
+    env:
+      DEFAULT_START_VERSION: v0.1.0
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need full history for tags & logs
+
+      - name: Collect PR context
+        id: pr
+        uses: actions-ecosystem/action-get-merged-pull-request@v1
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Determine next semantic version & build release assets
+        id: calc
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --quiet
+
+          # --- Helper functions ---
+          increment() {
+            local ver=$1 part=$2
+            ver=${ver#v}
+            IFS='.' read -r MA MI PA <<<"$ver"
+            MA=${MA:-0}; MI=${MI:-0}; PA=${PA:-0}
+            case "$part" in
+              major) MA=$((MA+1)); MI=0; PA=0;;
+              minor) MI=$((MI+1)); PA=0;;
+              patch) PA=$((PA+1));;
+            esac
+            echo "v${MA}.${MI}.${PA}"
+          }
+
+          latest_tag=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          start_ref=${latest_tag:-""}
+          if [ -z "$latest_tag" ]; then
+            base_version=$DEFAULT_START_VERSION
+            range_commits=$(git log --pretty=format:'%H' -n 200)
+          else
+            base_version=$latest_tag
+            range_commits=$(git log "${latest_tag}..HEAD" --pretty=format:'%H' || true)
+          fi
+
+          [ -z "$range_commits" ] && echo "No new commits since last tag." && range_commits=$(git log -n 1 --pretty=format:'%H')
+
+          # Gather commit messages & types
+          feats=(); fixes=(); docs=(); chores=(); refactors=(); perf=(); tests=(); others=(); breaks=()
+          bump="patch"
+
+          while read -r sha; do
+            msg=$(git log -n 1 --pretty=format:'%s' "$sha")
+            body=$(git log -n 1 --pretty=format:'%b' "$sha")
+            lower=$(echo "$msg" | tr 'A-Z' 'a-z')
+            type=${lower%%!*}
+            type=${type%%:*}
+            entry="- ${msg} (${sha:0:7})"
+            case "$type" in
+              feat) feats+=("$entry"); bump="minor" ;;
+              fix) fixes+=("$entry") ;;
+              docs) docs+=("$entry") ;;
+              chore) chores+=("$entry") ;;
+              refactor) refactors+=("$entry") ;;
+              perf) perf+=("$entry") ;;
+              test) tests+=("$entry") ;;
+              *) others+=("$entry") ;;
+            esac
+            if grep -qi 'breaking change' <<< "$body" || [[ "$msg" == *"!"* ]]; then
+              breaks+=("$entry")
+              bump="major"
+            fi
+          done <<< "$range_commits"
+
+          # PR labels override if present
+          pr_labels="${{ steps.pr.outputs.labels }}"
+          if grep -qi 'release:major' <<< "$pr_labels"; then bump="major"; fi
+          if grep -qi 'release:minor' <<< "$pr_labels" && [ "$bump" != "major" ]; then bump="minor"; fi
+          if grep -qi 'release:patch' <<< "$pr_labels" && [ "$bump" = "patch" ]; then bump="patch"; fi
+
+          next_tag=$(increment "$base_version" "$bump")
+          # Avoid collision if tag already exists (parallel / rerun)
+          if git rev-parse "$next_tag" >/dev/null 2>&1; then
+            ts=$(date +%Y%m%d-%H%M%S)
+            next_tag="${next_tag}-${ts}"; fi
+
+          compare_link=""
+            if [ -n "$latest_tag" ]; then
+              compare_link="https://github.com/${GITHUB_REPOSITORY}/compare/${latest_tag}...${next_tag}"
+            else
+              first_sha=$(git rev-list --max-parents=0 HEAD | head -n1)
+              compare_link="https://github.com/${GITHUB_REPOSITORY}/commit/${first_sha}"
+            fi
+
+          section() { # name, array[@]
+            local title=$1; shift; local -n arr=$1
+            [ ${#arr[@]} -eq 0 ] && return 0
+            echo "### $title"; printf '%s\n' "${arr[@]}"; echo
+          }
+
+          {
+            echo "# Pre-release $next_tag"
+            echo
+            echo "Bump type: $bump"
+            echo "Commit range: ${latest_tag:-INITIAL}..HEAD"
+            echo
+            [ ${#breaks[@]} -gt 0 ] && { echo "## ⚠️ Breaking Changes"; printf '%s\n' "${breaks[@]}"; echo; }
+            section "✨ Features" feats
+            section "🐛 Fixes" fixes
+            section "📝 Docs" docs
+            section "🧹 Chore" chores
+            section "♻️ Refactor" refactors
+            section "⚡ Performance" perf
+            section "🧪 Tests" tests
+            section "🔧 Other" others
+            echo "---"
+            echo "PR: #${{ steps.pr.outputs.number }} - ${{ steps.pr.outputs.title }}"
+            echo "Merged by: ${{ steps.pr.outputs.mergedBy }}"
+            echo "Author: ${{ steps.pr.outputs.author }}"
+            echo "Labels: $pr_labels"
+            echo
+            echo "Compare: $compare_link"
+          } > release_body.md
+
+          # Minimal changelog fragment
+          cp release_body.md CHANGELOG_FRAGMENT.md
+
+          # Metadata JSON
+          cat > release-metadata.json <<META
+          {
+            "tag": "$next_tag",
+            "bump": "$bump",
+            "previous_tag": "${latest_tag}",
+            "compare": "$compare_link",
+            "pr_number": "${{ steps.pr.outputs.number }}",
+            "pr_title": "${{ steps.pr.outputs.title }}"
+          }
+META
+
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "body_path=release_body.md" >> "$GITHUB_OUTPUT"
+          echo "changelog=CHANGELOG_FRAGMENT.md" >> "$GITHUB_OUTPUT"
+          echo "metadata=release-metadata.json" >> "$GITHUB_OUTPUT"
+
+          echo "Generated release notes:" >&2
+          sed -n '1,120p' release_body.md >&2
+
+      - name: Create pre-release (semantic, assets)
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.calc.outputs.tag }}
+          name: Pre-release ${{ steps.calc.outputs.tag }}
+          body_path: ${{ steps.calc.outputs.body_path }}
+          draft: false
+          prerelease: true
+          files: |
+            ${{ steps.calc.outputs.changelog }}
+            ${{ steps.calc.outputs.metadata }}
+
+      - name: Summary
+        run: |
+          echo "Release tag: ${{ steps.calc.outputs.tag }}" >> $GITHUB_STEP_SUMMARY
+          echo "Semantic bump: $(grep 'Bump type:' release_body.md | cut -d' ' -f3)" >> $GITHUB_STEP_SUMMARY
+          echo "Attached assets: CHANGELOG_FRAGMENT.md, release-metadata.json" >> $GITHUB_STEP_SUMMARY
