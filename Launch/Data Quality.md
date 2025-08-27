@@ -7,7 +7,7 @@ This backlog defines the work for two separate data quality notebooks:
 Pick order (priority)
 1) 01. Basic Data Quality Notebook (Core)
 2) 02. Shared Rule Engine & YAML Rule Packs
-3) 03. Results Store, Artifacts, and Baselines
+3) 03. Results Store, Artifacts and Baselines
 4) 04. Premium Data Quality Notebook (Healthcare Semantics)
 5) 05. Terminology Value Sets (LOINC/SNOMED/ICD-10/RxNorm)
 6) 06. UCUM Unit Standardization & Coherence
