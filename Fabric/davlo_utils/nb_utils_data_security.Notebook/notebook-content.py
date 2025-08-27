@@ -96,6 +96,7 @@ import base64
 import json
 from typing import List
 import pandas as pd
+import time
 
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, hmac
@@ -135,6 +136,10 @@ def column_level_encryption(
     - Randomized: HMAC over plaintext with per-run salt (varies each run).
     - Deterministic: HMAC over plaintext with fixed key (stable each run).
     """
+
+    start = time.perf_counter()
+    dav_client = DavloConfig()
+
     if not isinstance(df, pd.DataFrame):
         raise TypeError("df must be a pandas.DataFrame")
     if not isinstance(encryption_columns, (list, tuple)) or not all(isinstance(c, str) for c in encryption_columns):
@@ -239,6 +244,17 @@ def column_level_encryption(
         if hashing_option:
             out[f"{col}_hash"] = out[col].apply(lambda v, c=col: _hash_cell(c, v)).astype("object")
 
+
+    # Log the operation (assumes insert_activity_log is already defined)
+    dav_client.insert_activity_log(
+        process_name = "Encrypt",
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        rows_affected=len(out),
+        encrypted_columns=";".join(encryption_columns),
+        success=True
+    )
+
+
     return out
 
 # METADATA ********************
@@ -260,6 +276,10 @@ def column_level_decryption(
     encryption_key: str,
     encryption_columns: List[str],
 ) -> pd.DataFrame:
+
+    start = time.perf_counter()
+    dav_client = DavloConfig()
+
     VERSION_R = "v1"
     VERSION_D = "v1d"
     NONCE_LEN = 12
@@ -349,6 +369,16 @@ def column_level_decryption(
         out[logical_col] = out[enc_col].apply(
             lambda v: v if pd.isna(v) else _decrypt_value(v, aad_candidates)
         )
+
+    # Log the operation (assumes insert_activity_log is already defined)
+    dav_client.insert_activity_log(
+        process_name = "Encrypt",
+        duration_ms=int((time.perf_counter() - start) * 1000),
+        rows_affected=len(out),
+        encrypted_columns=";".join(encryption_columns),
+        success=True
+    )
+
 
     return out
 

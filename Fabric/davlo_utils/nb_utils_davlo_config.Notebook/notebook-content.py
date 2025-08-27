@@ -21,6 +21,8 @@ from azure.storage.filedatalake import DataLakeServiceClient
 import time
 import pandas as pd
 import json
+from typing import Any, Iterable, Optional, Sequence, Dict
+import re
 
 import sempy.fabric as fabric
 
@@ -215,48 +217,67 @@ def query_to_pd_config_db(query:str, conn= None) -> pd.DataFrame:
     return df
 
 
-def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
+def run_sql_config_db(query: str,
+                      conn=None,
+                      params: Optional[Sequence[Any]] = None,
+                      ultra_safe: bool = True) -> Dict[str, Any]:
     """
-    Execute a SQL query against the config DB with safety controls.
-    Returns a dict:
+    Execute a SQL query against the config DB with safety controls and optional parameters.
+
+    Returns dict:
       success: bool
       query: original query
       mode: ultra_safe | read_only | dml
-      columns, rows, rowcount (for SELECT)
-      rowcount (for DML)
-      error (on failure)
-    ultra_safe=True permits ONLY a single SELECT (or WITH ... SELECT) statement.
-    """
-    import re
-    import pyodbc
+      columns: list (when result set)
+      rows: list of tuples (when result set)
+      rowcount: int (rows returned for SELECT / affected for DML)
+      duration_ms: execution duration
+      error: message (on failure)
 
+    ultra_safe=True:
+      - Only single SELECT (or WITH ... SELECT) statement.
+      - Forbids data-changing keywords.
+    Non ultra_safe:
+      - Still enforces single statement & forbids dangerous commands.
+      - Allows INSERT/UPDATE/DELETE/MERGE.
+    Supports parameter binding via pyodbc '?' placeholders when params provided.
+    """
     original_query = query
+    start = time.time()
+
     if query is None:
         return {"success": False, "error": "No query provided", "query": original_query}
-
     query = query.strip()
     if not query:
         return {"success": False, "error": "Empty query", "query": original_query}
 
-    # Helpers
+    # Strip string literals to safely inspect structure
+    def _mask_literals(q: str) -> str:
+        return re.sub(r"('([^']|'')*')", "''", q)
+
     def _single_statement(q: str) -> bool:
-        semis = [m.start() for m in re.finditer(r";", q)]
+        # Ignore semicolons inside quotes (already masked)
+        masked = _mask_literals(q)
+        semis = [m.start() for m in re.finditer(r";", masked)]
         if not semis:
             return True
-        return len(semis) == 1 and semis[0] == len(q) - 1  # only one trailing semicolon
+        # Allow single trailing semicolon
+        return len(semis) == 1 and masked.rstrip().endswith(";")
 
     def _balanced_quotes(q: str) -> bool:
-        return q.count("'") % 2 == 0 and q.count('"') % 2 == 0
+        # Count of single quotes (excluding escaped '') must be even
+        # Simple heuristic
+        return q.count("'") % 2 == 0
 
-    def _is_select(q_lower: str) -> bool:
-        return q_lower.startswith("select") or q_lower.startswith("with")
+    def _is_select(q: str) -> bool:
+        ql = q.lstrip().lower()
+        return ql.startswith("select") or ql.startswith("with")
 
     q_lower = query.lower()
 
-    # Ultra safe: only SELECT
     if ultra_safe:
-        if not _is_select(q_lower.lstrip()):
-            return {"success": False, "error": "Only SELECT queries allowed in ultra_safe mode", "query": original_query}
+        if not _is_select(q_lower):
+            return {"success": False, "error": "Only SELECT allowed in ultra_safe mode", "query": original_query}
         if not _single_statement(query):
             return {"success": False, "error": "Multiple statements not allowed", "query": original_query}
         if not _balanced_quotes(query):
@@ -264,40 +285,32 @@ def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
         forbidden = [
             r"\binsert\b", r"\bupdate\b", r"\bdelete\b", r"\bmerge\b",
             r"\bdrop\b", r"\balter\b", r"\btruncate\b", r"\bexec\b",
-            r"\bcreate\b", r"\bgrant\b", r"\brevoke\b", r"\battach\b",
-            r"\bdetach\b", r"\bbackup\b", r"\brestore\b"
+            r"\bcreate\b", r"\bgrant\b", r"\brevoke\b", r"\bbackup\b",
+            r"\brestore\b"
         ]
-        if any(re.search(pat, q_lower) for pat in forbidden):
+        if any(re.search(p, q_lower) for p in forbidden):
             return {"success": False, "error": "Only pure SELECT allowed", "query": original_query}
-        is_select = True
         mode = "ultra_safe"
+        is_select = True
     else:
-        # Broader but still restricted
         if not _single_statement(query):
             return {"success": False, "error": "Multiple statements not allowed", "query": original_query}
         if not _balanced_quotes(query):
             return {"success": False, "error": "Unbalanced quotes", "query": original_query}
-
         forbidden = [
             r"\bdrop\b", r"\balter\b", r"\btruncate\b", r"\bexec\b",
             r"\bxp_", r"\bsp_", r"\battach\b", r"\bdetach\b",
-            r"\bbackup\b", r"\brestore\b", r"\bcreate\s+login\b",
-            r"\bcreate\s+user\b", r"\bgrant\b", r"\brevoke\b"
+            r"\bbackup\b", r"\brestore\b", r"\bgrant\b", r"\brevoke\b",
+            r"\bcreate\s+login\b", r"\bcreate\s+user\b"
         ]
-        if any(re.search(pat, q_lower) for pat in forbidden):
+        if any(re.search(p, q_lower) for p in forbidden):
             return {"success": False, "error": "Forbidden keyword detected", "query": original_query}
-
-        # Basic incomplete DML detection
         tokens = q_lower.replace(";", "").split()
         first = tokens[0] if tokens else ""
-        if first == "insert":
-            # Require pattern: INSERT INTO <table> ...
-            if not re.match(r"^\s*insert\s+into\s+\S+", q_lower):
-                return {"success": False, "error": "Query rejected: Incomplete or malformed INSERT statement", "query": original_query}
-        elif first in ("update", "delete", "merge"):
-            if len(tokens) < 2:
-                return {"success": False, "error": f"Query rejected: Incomplete {first.upper()} statement", "query": original_query}
-
+        if first == "insert" and not re.match(r"^\s*insert\s+into\s+\S+", q_lower):
+            return {"success": False, "error": "Malformed INSERT", "query": original_query}
+        if first in ("update", "delete", "merge") and len(tokens) < 2:
+            return {"success": False, "error": f"Incomplete {first.upper()} statement", "query": original_query}
         is_select = _is_select(q_lower)
         mode = "read_only" if is_select else "dml"
 
@@ -309,31 +322,38 @@ def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
             created_conn = True
 
         cursor = conn.cursor()
-        cursor.execute(query)
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
 
-        if is_select:
-            columns = [c[0] for c in (cursor.description or [])]
+        # pyodbc provides cursor.description if a result set is present
+        if cursor.description:
+            columns = [c[0] for c in cursor.description]
             rows = cursor.fetchall()
-            return {
+            rowcount = len(rows)
+            result = {
                 "success": True,
                 "query": original_query,
                 "mode": mode,
                 "columns": columns,
                 "rows": [tuple(r) for r in rows],
-                "rowcount": len(rows)
+                "rowcount": rowcount,
             }
         else:
-            # DML path
-            conn.commit()
-            return {
+            if not is_select:
+                conn.commit()
+            result = {
                 "success": True,
                 "query": original_query,
                 "mode": mode,
                 "rowcount": cursor.rowcount
             }
 
+        result["duration_ms"] = int((time.time() - start) * 1000)
+        return result
+
     except pyodbc.Error as e:
-        # Rollback only for DML
         try:
             if conn and not is_select:
                 conn.rollback()
@@ -343,14 +363,16 @@ def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
             "success": False,
             "query": original_query,
             "mode": mode if 'mode' in locals() else "unknown",
-            "error": f"Database error: {e}"
+            "error": f"Database error: {e}",
+            "duration_ms": int((time.time() - start) * 1000)
         }
     except Exception as e:
         return {
             "success": False,
             "query": original_query,
             "mode": mode if 'mode' in locals() else "unknown",
-            "error": str(e)
+            "error": str(e),
+            "duration_ms": int((time.time() - start) * 1000)
         }
     finally:
         if created_conn and conn:
@@ -358,6 +380,7 @@ def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
                 conn.close()
             except Exception:
                 pass
+
 
 
 # METADATA ********************
@@ -372,15 +395,17 @@ def run_sql_config_db(query: str, conn=None, ultra_safe: bool = True):
 class DavloConfig:
     """
     Convenience wrapper for config DB operations.
-    Holds:
+
+    Attributes:
       config_file: dict with Azure + SQL settings
       conn: live pyodbc connection (lazy)
-      workspace_id: optional workspace / tenant scope
+      workspace_id: workspace / tenant scope (GUID or string)
     """
     def __init__(self):
         self.config_file = get_config_file(log=False)
         self.workspace_id = fabric.get_notebook_workspace_id()
-        self.conn = connect_to_db(self.config_file)
+        self.conn = None  # lazy
+        self.ensure_connection()
 
     def ensure_connection(self):
         if self.conn is None:
@@ -394,28 +419,47 @@ class DavloConfig:
             finally:
                 self.conn = None
 
-    def run_query(self, query: str, ultra_safe: bool = True):
+    def run_query(self, query: str, params: Optional[Sequence[Any]] = None, ultra_safe: bool = True):
         self.ensure_connection()
-        return run_sql_config_db(query=query, conn=self.conn, ultra_safe=ultra_safe)
+        return run_sql_config_db(query=query, conn=self.conn, params=params, ultra_safe=ultra_safe)
 
-    def insert_logging_row(self):
+    # Generic fetch helper returning DataFrame
+    def fetch_df(self, query: str, params: Optional[Sequence[Any]] = None) -> pd.DataFrame:
+        resp = self.run_query(query=query, params=params, ultra_safe=True)
+        return pd.DataFrame(data=resp.get("rows", []), columns=resp.get("columns", []))
 
-        sql = f"""
-        INSERT INTO
-        VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME())
+    def get_sample_logging_rows(self, top: int = 10) -> pd.DataFrame:
+        sql = f"SELECT TOP({int(top)}) * FROM [logging].[ActivityLogEncryption] ORDER BY [LoggingID] DESC;"
+        return self.fetch_df(sql)
+
+    def insert_activity_log(self,
+                            process_name: str,
+                            rows_affected: int,
+                            encrypted_columns: str,
+                            duration_ms: int,
+                            success: bool = True) -> Any:
         """
-
-        response = run_sql_config_db(query=sql, conn=self.conn,ultra_safe=False)
-        print(response)
-    
-    def get_logging_row(self):
-
-        sql = f"""
-        SELECT TOP(10) * FROM LOGGING.ActivityLog
+        Inserts a row into logging.ActivityLogEncryption and returns the new LoggingID.
         """
-
-        response = run_sql_config_db(query=sql, conn=self.conn,ultra_safe=False)
-        return response
+        sql = """
+        INSERT INTO [logging].[ActivityLogEncryption]
+            (WorkspaceID, Process, RowsAffected, EncryptedColumns, DurationMs, Success)
+        OUTPUT INSERTED.LoggingID
+        VALUES (?, ?, ?, ?, ?, ?);
+        """
+        params = (
+            str(self.workspace_id),
+            process_name,
+            rows_affected,
+            encrypted_columns,
+            duration_ms,
+            1 if success else 0
+        )
+        resp = self.run_query(sql, params=params, ultra_safe=False)
+        # Assuming run_sql_config_db returns {'rows': [[LoggingID]], 'columns': ['LoggingID'], ...}
+        if resp.get("rows"):
+            return resp["rows"][0][0]
+        return None
 
 
 # METADATA ********************
@@ -438,7 +482,14 @@ dav = DavloConfig()
 
 # CELL ********************
 
-dav.get_logging_row().get('rows')
+dav = DavloConfig()
+
+dav.insert_activity_log(
+    process_name="Encryption",
+    duration_ms=392850,
+    rows_affected=231,
+    encrypted_columns="internalId;BSN"
+)
 
 # METADATA ********************
 
@@ -449,21 +500,7 @@ dav.get_logging_row().get('rows')
 
 # CELL ********************
 
-run_sql_config_db(query="PUT", ultra_safe=False)
-
-# METADATA ********************
-
-# META {
-# META   "language": "python",
-# META   "language_group": "jupyter_python"
-# META }
-
-# CELL ********************
-
-config_file = get_config_file(log=True)
-
-conn = get_conn(config_file=config_file)
-query_config_db(query = "SELECT TOP 5 name FROM sys.databases", conn=conn)
+# dav.get_sample_logging_row()
 
 # METADATA ********************
 
