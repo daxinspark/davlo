@@ -396,39 +396,135 @@ def column_level_decryption(
 
 # MARKDOWN ********************
 
-# ### Example
+# ## Encryption key rotation
 
 # CELL ********************
 
-# df = pd.DataFrame({
-#     "id": [1, 2, 3],
-#     "email": ["alice@example.com", "bob@example.com", "carol@example.com"],
-#     "salary": [85000, 92000, 101000],
-# })
-# print(df)
+from azure.identity import ClientSecretCredential
 
-# # Generate a high-entropy root key (store/manage securely in practice)
-# root_key = base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
-# print(root_key)
+client_id = "efd3c00c-9dc3-41de-a13f-a121c4384b0d"  
+encrypted_bytes = "\u007fgL\u0012{Ti\u001b{\u001f`AXuOId{eXprf\u001cEYCG~xO\u0018siC^EK\u0019n"  
+tenant_id = "2b55fa1c-0add-4120-a8e4-9987abf4d504"
+client_secret = (bytes([b ^ 42 for b in encrypted_bytes.encode("latin1")]).decode())
+kv_uri = "https://kv-euw-davlo.vault.azure.net/"
 
-# # Encrypt selected columns
-# encrypted_df = column_level_encryption(
-#     df=df,
-#     encryption_key=root_key,
-#     encryption_columns=["email", "salary"],
-#     hashing_option=False,
-#     encryption_randomize=True
-# )
+credential = ClientSecretCredential(
+    tenant_id=tenant_id,
+    client_id=client_id,
+    client_secret=client_secret
+)
 
-# print(encrypted_df.head())
 
-# decrypt_df = column_level_decryption(
-#     df=encrypted_df,
-#     encryption_key=root_key,
-#     encryption_columns=["email", "salary"]
-# )
+from azure.keyvault.secrets import SecretClient
+secret_client = SecretClient(vault_url=kv_uri, credential=credential)
 
-# print(decrypt_df.head())
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+def get_all_encryption_keys(credential:ClientSecretCredential, keyvault_uri:str):
+    from azure.keyvault.secrets import SecretClient
+    secret_client = SecretClient(vault_url=kv_uri, credential=credential)
+
+    secrets_list = [
+        secret.name
+        for secret in secret_client.list_properties_of_secrets()
+        if secret.name.startswith("ENCRYPTION-KEY")
+    ]
+
+    return secrets_list
+
+
+def get_encryption_key(credential:ClientSecretCredential, keyvault_uri:str, key_name:str) -> str:
+    from azure.keyvault.secrets import SecretClient
+    try:
+        secret_client = SecretClient(vault_url=keyvault_uri, credential=credential)
+        secret = secret_client.get_secret(key_name).value
+        secret_client.close()
+    except Exception as e:
+        print(e)
+        try: secret_client.close() 
+        except: None
+        return ""
+
+    return secret
+
+
+def create_encryption_key():
+    import base64, os
+    return base64.urlsafe_b64encode(os.urandom(32)).decode("ascii")
+
+
+def post_encryption_key(new_key:str, credential:ClientSecretCredential, keyvault_uri:str, key_name:str) -> bool:
+    from azure.keyvault.secrets import SecretClient
+    try:
+        secret_client = SecretClient(vault_url=keyvault_uri, credential=credential)
+
+        if key_name in get_all_encryption_keys(credential, keyvault_uri): return False
+        
+        secret = secret_client.set_secret(key_name, new_key)
+        secret_client.close()
+    except Exception as e:
+        print(e)
+        try: secret_client.close() 
+        except: None
+        return False
+
+    return True
+
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+value=get_encryption_key(
+    credential=credential,
+    keyvault_uri=kv_uri,
+    key_name="ENCRYPTION-KEY-V1"
+)
+value
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+post_encryption_key(
+    new_key=create_encryption_key(),
+    credential=credential,
+    keyvault_uri=kv_uri,
+    key_name="ENCRYPTION-KEY-V1"
+)
+
+# METADATA ********************
+
+# META {
+# META   "language": "python",
+# META   "language_group": "jupyter_python"
+# META }
+
+# CELL ********************
+
+def rotate_encryption_key():
+    creds = get_credential_client
+
+    
 
 # METADATA ********************
 

@@ -151,9 +151,10 @@ def check_workspace_module(module_name:str, workspace_uri:str, config_file:dict,
 
 # CELL ********************
 
-def get_sql_secret(config_file: dict):
+def get_credential_client(config_file: dict = None):
+    if not config_file: config_file = get_config_file(log=False)
+    
     from azure.identity import ClientSecretCredential
-    from azure.keyvault.secrets import SecretClient
 
     tenant_id = config_file.get('sp').get('tenant_id')
     client_id = config_file.get('sp').get('client_id')        
@@ -165,6 +166,16 @@ def get_sql_secret(config_file: dict):
         client_id=client_id,
         client_secret=client_secret
     )
+
+    return credential
+
+
+
+def get_sql_secret(config_file: dict):
+    from azure.identity import ClientSecretCredential
+    from azure.keyvault.secrets import SecretClient
+
+    credential = get_credential_client(config_file=config_file)
 
     kv_uri = config_file.get('keyvault').get('url')
 
