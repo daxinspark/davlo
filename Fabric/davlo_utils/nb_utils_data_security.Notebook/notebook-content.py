@@ -244,14 +244,16 @@ def column_level_encryption(
         if hashing_option:
             out[f"{col}_hash"] = out[col].apply(lambda v, c=col: _hash_cell(c, v)).astype("object")
 
-
-    # Log the operation (assumes insert_activity_log is already defined)
-    dav_client.insert_activity_log(
-        process_name = "Encrypt",
-        duration_ms=int((time.perf_counter() - start) * 1000),
-        rows_affected=len(out),
-        encrypted_columns=";".join(encryption_columns),
-        success=True
+    dav_client.post(
+        table = 'logging.ActivityLogEncryption',
+        data = {
+            "Process":"Encryption",
+            "DurationMs":int((time.perf_counter() - start) * 1000),
+            "RowsAffected":len(out),
+            "EncryptedColumns":";".join(encryption_columns),
+            "Success":True,
+            "WorkspaceID": fabric.get_workspace_id()
+        }
     )
 
 
@@ -370,13 +372,16 @@ def column_level_decryption(
             lambda v: v if pd.isna(v) else _decrypt_value(v, aad_candidates)
         )
 
-    # Log the operation (assumes insert_activity_log is already defined)
-    dav_client.insert_activity_log(
-        process_name = "Encrypt",
-        duration_ms=int((time.perf_counter() - start) * 1000),
-        rows_affected=len(out),
-        encrypted_columns=";".join(encryption_columns),
-        success=True
+    dav_client.post(
+        table = 'logging.ActivityLogEncryption',
+        data = {
+            "Process":"Decryption",
+            "DurationMs":int((time.perf_counter() - start) * 1000),
+            "RowsAffected":len(out),
+            "EncryptedColumns":";".join(encryption_columns),
+            "Success":True,
+            "WorkspaceID": fabric.get_workspace_id()
+        }
     )
 
 

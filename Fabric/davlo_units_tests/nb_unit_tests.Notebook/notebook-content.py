@@ -66,6 +66,7 @@ def data_security():
         )
 
         display(decrypt_df.head())
+        print(f"\n\n")
 
         return True
     except Exception as e:
@@ -139,13 +140,14 @@ def data_security_big():
         )
         display(decrypted_df.head())
 
+        print(f"\n\n")
         return True
     except Exception as e:
         print(e)
         return False
 
-data_security()
-# data_security_big()
+# data_security()
+data_security_big()
 
 # METADATA ********************
 
